@@ -6,6 +6,8 @@ import torch.nn as nn
 from .topology import PersistentHomologyCalculation #AlephPersistenHomologyCalculation, \
 import pytorch_lightning as pl
 
+from .utils import plot_latent_tensorboard, calculate_wasserstein_distance
+
 class TopologicallyRegularizedAutoencoder(pl.LightningModule):
     """Topologically regularized autoencoder."""
 
@@ -70,6 +72,26 @@ class TopologicallyRegularizedAutoencoder(pl.LightningModule):
         self.log('val/top_loss',  topo_loss)
         loss = mse_loss + self.rtd_l * topo_loss
         self.log('val/loss', loss)
+        return x, latent, y
+    
+    def validation_epoch_end(self, validation_step_outputs):
+        logger = self.logger.experiment
+        if self.current_epoch % 5 == 0:
+            xs, zs, ys = [], [], []
+            for x, z, y in validation_step_outputs:
+                xs.append(x.cpu().detach().numpy())
+                zs.append(z.cpu().detach().numpy())
+                ys.append(y.cpu().detach().numpy())
+            x = np.concatenate(xs, axis=0)
+            z = np.concatenate(zs, axis=0)
+            y = np.concatenate(ys, axis=0)
+            image = plot_latent_tensorboard(z, y)
+            if image is not None:
+                logger.add_image('val/image', image, self.current_epoch, dataformats='HWC')
+        if self.current_epoch % 20 == 0:
+            wass = calculate_wasserstein_distance(x, z, batch_size=2048, max_dim=0)
+            logger.add_scalar('val/wasserstein_h0', np.mean(wass.get(0, 0.0)), self.current_epoch)
+            logger.add_scalar('val/wasserstein_h1', np.mean(wass.get(1, 0.0)), self.current_epoch)
 
 
 class TopologicalSignatureDistance(nn.Module):

@@ -1,5 +1,5 @@
 import numpy as np
-from tadasets.dimension import embed
+# from tadasets.dimension import embed
 
 '''
 source: https://github.com/scikit-tda/tadasets/blob/master/tadasets/shapes.py
@@ -28,11 +28,12 @@ def dsphere(n=100, d=2, r=1, noise=None, ambient=None):
     ambient : int, default=None
         Embed the sphere into a space with ambient dimension equal to `ambient`. The sphere is randomly rotated in this high dimensional space.
     """
-    data = np.random.randn(n, d+1)
+    original = np.random.randn(n, d+1)
 
     # Normalize points to the sphere
-    data = r * data / np.sqrt(np.sum(data**2, 1)[:, None]) 
-
+    original = r * original / np.sqrt(np.sum(original**2, 1, keepdims=True)) 
+    data = original.copy()
+    
     if noise: 
         data += noise * np.random.randn(*data.shape)
 
@@ -42,7 +43,7 @@ def dsphere(n=100, d=2, r=1, noise=None, ambient=None):
 
 
 
-    return data
+    return original, data
 
 
 def sphere(n=100, r=1, noise=None, ambient=None):

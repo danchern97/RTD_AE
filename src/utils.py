@@ -6,9 +6,17 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.spatial import distance_matrix, ConvexHull
 from sklearn.metrics.pairwise import pairwise_distances
+from sklearn.neighbors import NearestNeighbors, kneighbors_graph
+from scipy.sparse.csgraph import connected_components, shortest_path
+import sknetwork.path
 from sklearn.exceptions import NotFittedError
 from scipy.spatial.distance import cdist
+from scipy.spatial import distance_matrix
 from itertools import chain
+
+import gudhi as gd
+import gudhi.hera as hera
+import PIL
 
 def get_linear_model(input_dim, latent_dim=2, n_hidden_layers=2, hidden_dim=32, m_type='encoder', **kwargs):
     layers = list(
@@ -71,8 +79,27 @@ class Reshape(nn.Module):
         batch_size = x.shape[0]
         return x.view((batch_size, *self.shape))
 
+def get_geodesic_distance(data, n_neighbors=3, **kwargs):
+    kng = kneighbors_graph(data, n_neighbors=n_neighbors, mode='distance', **kwargs)
+    n_connected_components, labels = connected_components(kng)
+    if n_connected_components > 1:
+        kng = _fix_connected_components(
+                    X=data,
+                    graph=kng,
+                    n_connected_components=n_connected_components,
+                    component_labels=labels,
+                    mode="distance",
+                    **kwargs
+                )
+
+    if connected_components(kng)[0] != 1:
+        raise ValueError("More than 1 connected component in the end!")
+    #     return shortest_path(kng, directed=False)
+    print(f"N connected: {n_connected_components}")
+    return shortest_path(kng, directed=False)
+
 class FromNumpyDataset(Dataset):
-    def __init__(self, data, labels=None, flatten=True, scaler=None):
+    def __init__(self, data, labels=None, geodesic=False, flatten=True, scaler=None, **kwargs):
         if labels is not None:
             assert len(labels) == len(data), "The length of labels and data are not equal"
             self.labels = labels
@@ -86,24 +113,33 @@ class FromNumpyDataset(Dataset):
             except NotFittedError:
                 self.data = scaler.fit_transform(self.data)
         self.scaler = scaler
+        if geodesic:
+            self.data_dist = get_geodesic_distance(self.data, **kwargs)
         
     def __len__(self):
         return len(self.data)
     
     def __getitem__(self, idx):
         if hasattr(self, 'labels'):
-            return idx, self.data[idx], self.labels[idx]
+            label = self.labels[idx]
         else:
-            return idx, self.data[idx], 0
+            label = 0
+        if hasattr(self, 'data_dist'):
+            return idx, self.data[idx], label, self.data_dist[idx]
+        else:
+            return idx, self.data[idx], label
         
 def get_latent_representations(model, data_loader):
     labels = []
     data = []
     model.eval()
+    model.to('cpu')
     with torch.no_grad():
         for x, _, y in data_loader:
+#             if x.device != model.device:
+#                 x.to(model.device)
             labels.append(y.numpy())
-            data.append(model(x).numpy())
+            data.append(model(x).cpu().numpy())
     return np.concatenate(data, axis=0), np.concatenate(labels, axis=0)
 
 def vizualize_data(data, labels=None, alpha=1.0, s=1.0, title="", ax=None):
@@ -119,6 +155,22 @@ def vizualize_data(data, labels=None, alpha=1.0, s=1.0, title="", ax=None):
     ax.set_title(title, fontsize=20)
     return ax
 
+def plot_latent_tensorboard(latent, labels):
+    if latent.shape[1] < 3:
+        fig, ax = plt.subplots(figsize=(8, 8))
+        ax.scatter(latent[:, 0], latent[:, 1], c=labels, s=20.0, alpha=0.7, cmap='viridis')
+    elif latent.shape[1] == 3:
+        fig = plt.figure(figsize=(10, 10))
+        ax = fig.add_subplot(1, 1, 1, projection='3d')
+        ax.scatter(latent[:, 0], latent[:, 1], latent[:, 2], c=labels, s=1.0, alpha=0.7, cmap='viridis')
+    else:
+        return None
+    fig.canvas.draw()
+    image = np.array(PIL.Image.frombytes('RGB', fig.canvas.get_width_height(), fig.canvas.tostring_rgb()))
+    plt.close(fig)
+    return image
+#     return np.swapaxes(np.array(fig.canvas.renderer.buffer_rgba()), -1, 1)
+
 def plot_latent(train_latent, train_labels, model_name, dataset_name):
     if train_latent.shape[1] > 2:
         fig = plt.figure(figsize=(12, 8))
@@ -127,6 +179,44 @@ def plot_latent(train_latent, train_labels, model_name, dataset_name):
         fig, axes = plt.subplots(nrows=1, ncols=1, figsize=(12, 8))
     axes = vizualize_data(train_latent, train_labels, title=f"Model: {model_name}, dataset:{dataset_name}", ax=axes)
     return fig, axes
+
+def calculate_barcodes(distances, max_dim=1):
+    skeleton = gd.RipsComplex(distance_matrix = distances)
+    simplex_tree = skeleton.create_simplex_tree(max_dimension=max_dim+1)
+    barcodes = simplex_tree.persistence()
+    pbarcodes = {}
+    for i in range(max_dim+1):
+        pbarcodes[i] = [[b[1][0], b[1][1]] for b in barcodes if b[0] == i]
+    return pbarcodes
+
+def cast_to_normal_array(barcodes):
+    return np.array([[b, d] for b, d in barcodes])
+
+def calculate_wasserstein_distance(x, z, n_runs = 5, batch_size = 2048, max_dim = 1):
+    if batch_size > len(x):
+        n_runs = 1
+    
+    results = {d:[] for d in range(max_dim+1)}
+    x = x.reshape(len(x), -1)
+    z = z.reshape(len(z), -1)
+    for i in range(n_runs):
+        ids = np.random.choice(np.arange(0, len(x)), size=min(batch_size, len(x)), replace=False)
+        data = x[ids]
+        distances = distance_matrix(data, data)
+        distances = distances/np.percentile(distances.flatten(), 90)
+        
+        barcodes = {'original':calculate_barcodes(distances, max_dim=max_dim)}
+        
+        data = z[ids]
+        distances = distance_matrix(data, data)
+        distances = distances/np.percentile(distances.flatten(), 90)
+        barcodes['model'] = calculate_barcodes(distances, max_dim=max_dim)
+        for dim in range(max_dim+1):
+            original = cast_to_normal_array(barcodes['original'][dim])
+            model = cast_to_normal_array(barcodes['model'][dim])
+            results[dim].append(hera.wasserstein_distance(original, model, internal_p=1))
+    return results
+         
 
 def _fix_connected_components(
     X,
@@ -234,4 +324,4 @@ class FurthestScaler:
             points = points.reshape(points.shape[0],-1)
         idx = np.random.choice(np.arange(len(points)), size=1)
         hdist = distance_matrix(points[idx], points, p=self.p)
-        return hdist.max() # upper bound
+        return 0.1*hdist.max() # upper bound

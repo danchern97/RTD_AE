@@ -1,0 +1,9 @@
+tqdm==4.64.0
+torch==1.10.2+cu113
+scikit-learn==0.24.2
+ripserplusplus @ git+https://github.com/ArGintum/RipserZeros.git@bac8a96f56e9e3ed46202323accbeeee11c4b54c
+POT==0.8.2
+matplotlib==3.3.4
+gudhi==3.5.0
+pytorch-lightning==1.5.10
+pandas==1.1.5
