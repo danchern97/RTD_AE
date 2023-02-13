@@ -18,4 +18,12 @@ For visualization purposes, please refer to `Visualization and metrics.ipynb`.
 
 ## Cite us
 
-Our paper is accepted to the ICLR 2023 main conference and is selected for poster session.
+```
+@inproceedings{trofimov2023learning,
+title={Learning topology-preserving data representations},
+author={Ilya Trofimov and Daniil Cherniavskii and Eduard Tulchinskii and Nikita Balabin and Serguei Barannikov and Evgeny Burnaev},
+booktitle={International Conference on Learning Representations},
+year={2023},
+url={https://openreview.net/forum?id=lIu-ixf-Tzf}
+}
+```
